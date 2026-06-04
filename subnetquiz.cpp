@@ -8,11 +8,21 @@
 #include <QDebug>
 #include <QInputDialog>
 #include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QStandardPaths>
+#include <QDir>
+#include <algorithm>
+
+const int MATCH_DURATION = 3;
 
 SubnetQuiz::SubnetQuiz(QWidget *parent) : QWidget(parent) {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
 
     scoreTrackerLabel = new QLabel(this);
+    scoreTrackerLabel->setObjectName("scoreTrackerLabel");
     scoreTrackerLabel->setAlignment(Qt::AlignCenter);
     scoreTrackerLabel->setStyleSheet("font-size: 13px; font-weight: bold; color: #333333; margin-top: 5px;");
 
@@ -30,6 +40,8 @@ SubnetQuiz::SubnetQuiz(QWidget *parent) : QWidget(parent) {
 
     // QUIZ GRID
     QGridLayout *quizGrid = new QGridLayout();
+
+
 
     firstAddrInput = new QLineEdit();
     lastAddrInput = new QLineEdit();
@@ -70,6 +82,16 @@ SubnetQuiz::SubnetQuiz(QWidget *parent) : QWidget(parent) {
     // FINISH BUTTON
     finishButton = new QPushButton("Finish");
 
+
+    // PLAY AGAIN BUTTON
+    // Inside SubnetQuiz::SubnetQuiz(...)
+    playAgainButton = new QPushButton("Play Again", this);
+    playAgainButton->setVisible(false); // Hidden until the LAST round ends
+    playAgainButton->setStyleSheet("background-color: #2ec4b6; color: #1e1e24; font-weight: bold;");
+    connect(playAgainButton, &QPushButton::clicked, this, &SubnetQuiz::resetGame);
+
+
+    mainLayout->addWidget(playAgainButton);
     mainLayout->addWidget(playerLabel);
     mainLayout->addWidget(headerLabel);
     mainLayout->addWidget(questionLabel);
@@ -86,11 +108,15 @@ SubnetQuiz::SubnetQuiz(QWidget *parent) : QWidget(parent) {
     connect(submitButton, &QPushButton::clicked, this, &SubnetQuiz::checkAnswer);
     connect(finishButton, &QPushButton::clicked, this, [this](){
         int percentage = 0;
-        if(m_totalQuestions>0) {
-        percentage = (m_score*100)/m_totalQuestions;
+        if (m_totalExercisesAttemped > 0) {
+            percentage = (m_exercisesSolved * 100) / m_totalExercisesAttemped;
         }
-        QMessageBox::information(this, "Quiz Finished",
-        QString("Final Score: %1%").arg(percentage));
+
+        QMessageBox::information(this, "Quiz Finished Early",
+                                 QString("Player: %1\nFinal Score: %2 XP\nAccuracy: %3%")
+                                     .arg(m_playerName)
+                                     .arg(m_runningScore)
+                                     .arg(percentage));
         emit finished();
     });
 
@@ -104,7 +130,7 @@ SubnetQuiz::SubnetQuiz(QWidget *parent) : QWidget(parent) {
 
 QuizData SubnetQuiz::generateNewQuestion(){
     clearInputs();
-    m_startTime = std::chrono::steady_clock::now();
+
 
     SubnetQuestion currentJob = SubnetCalculator::generateQuestion();
     this->currentNetworkId = currentJob.networkId;
@@ -134,6 +160,7 @@ QuizData SubnetQuiz::generateNewQuestion(){
     QuizData result;
     result.networkId = this->currentNetworkId;
     result.cidr = this->currentCidr;
+    m_startTime = std::chrono::steady_clock::now();
     return result;
 
 
@@ -176,7 +203,7 @@ bool SubnetQuiz::validateNumber(QString input) {
 void SubnetQuiz::initializeGame() {
     bool ok;
     QString Name = QInputDialog::getText(this, tr("Welcome to the Subnet Trainer"),
-                                         tr("Enter your name:"), QLineEdit::Normal, QDir::home().dirName(), &ok);
+                                         tr("Enter your name:"), QLineEdit::Normal, "", &ok);
 if (ok && !Name.isEmpty()) {
         m_playerName = Name;
     } else {
@@ -190,9 +217,16 @@ if (ok && !Name.isEmpty()) {
 
 }
 
+void SubnetQuiz::checkAnswer() {
+    // 1. Every click counts as a recorded attempt
+    m_totalExercisesAttemped++;
 
-void SubnetQuiz::checkAnswer () {
+    // Safety guard using your correct variable name
+    if (m_exercisesSolved >= MATCH_DURATION) {
+        return;
+    }
 
+    // --- FORM VALIDATION ---
     feedbackLabel->setText("");
     if (!validate(firstAddrInput->text())) {
         feedbackLabel->setText("Invalid First IP format! Use x.x.x.x");
@@ -209,20 +243,18 @@ void SubnetQuiz::checkAnswer () {
         feedbackLabel->setStyleSheet("color: red; font-weight: bold;");
         return;
     }
-    if(!validateNumber(hostsInput->text())) {
+    if (!validateNumber(hostsInput->text())) {
         feedbackLabel->setText("Use a valid number for the host count!");
         feedbackLabel->setStyleSheet("color: red; font-weight: bold;");
         return;
     }
 
-    m_totalExercisesAttemped++;
-
+    // --- TIMING MATH ---
     auto endTime = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(endTime - m_startTime);
     int secondsTaken = static_cast<int>(duration.count());
 
-
-    // Explicitly scoping the static calls to your decoupled math utility class
+    // --- PARSE USER DATA ---
     uint32_t gFirst = SubnetCalculator::parseIp(firstAddrInput->text().trimmed());
     uint32_t gLast  = SubnetCalculator::parseIp(lastAddrInput->text().trimmed());
     uint32_t gBroad = SubnetCalculator::parseIp(broadcastInput->text().trimmed());
@@ -230,45 +262,79 @@ void SubnetQuiz::checkAnswer () {
 
     SubnetDetails target = SubnetCalculator::calculateSubnet(this->currentNetworkId, this->currentCidr);
 
-
+    // --- EVALUATION ---
     if (gFirst == target.firstUsable && gLast == target.lastUsable &&
         gBroad == target.broadcast   && gHosts == target.numHosts) {
 
+        // SUCCESS!!!
         m_exercisesSolved++;
 
-        // Give more time for larger, more complex subnets
-        int timeLimit = 45;
-        if (this->currentCidr < 24) {
-            timeLimit = 90; // Give 90 seconds for tough Class A/B subnets
-        } else if (this->currentCidr >= 30) {
-            timeLimit = 20; // Tighten it up for easy point-to-point links
+        int speedBonus = 10; // Baseline floor for taking over 3 minutes
+
+        if (secondsTaken <= 20) {
+            speedBonus = 120;  // 👑 Subnet God Mode (Under 20s) -> 170 XP total
+        } else if (secondsTaken <= 40) {
+            speedBonus = 100;  // 🔥 Elite Speed (Under 40s) -> 150 XP total
+        } else if (secondsTaken <= 60) {
+            speedBonus = 80;   // ⚡ Great Pace (Under 1 minute) -> 130 XP total
+        } else if (secondsTaken <= 90) {
+            speedBonus = 60;   // ⏱️ Good Pace (Under 1.5 mins) -> 110 XP total
+        } else if (secondsTaken <= 120) {
+            speedBonus = 40;   // 👍 Steady Pace (Under 2 mins) -> 90 XP total
+        } else if (secondsTaken <= 180) {
+            speedBonus = 25;   // 🛡️ Safe Zone (Under 3 mins) -> 75 XP total
         }
 
-        int speedBonus = std::max(10, 100 - (static_cast<int>(secondsTaken) * (100 / timeLimit)));
         m_runningScore += 50 + speedBonus;
-
+        updateScoreDisplay();
 
         QMessageBox::information(this, "Correct!",
-                                 QString("Great job %1!\nSession Score: %2/%3\nTime: %4s (+%5 XP)")
-                                     .arg(m_playerName)
+                                 QString("Round %1/%2 Correct!\nTime: %3s (+%4 XP)")
                                      .arg(m_exercisesSolved)
-                                     .arg(m_totalExercisesAttemped)
+                                     .arg(MATCH_DURATION)
                                      .arg(secondsTaken)
                                      .arg(50 + speedBonus));
 
-        // Move to the next random question
-        updateScoreDisplay();
-        generateNewQuestion();
+        // Let the outer logic handle round transitions smoothly now
+
     } else {
-        // Provide visual mistake feedback on screen without jumping to a new question
+        // --- RETRY LOGIC -FAILURE!- ---
+        QMessageBox::warning(this, "Incorrect Boundary",
+                             "That configuration is incorrect.\n\nCheck your host bits and subnet mask details, then try again!");
+
+        clearInputs();
         feedbackLabel->setText("Incorrect. Double-check your subnet boundaries!");
         feedbackLabel->setStyleSheet("color: orange; font-weight: bold;");
+
+        updateScoreDisplay(); // Refresh to reflect their new total click attempt count
+        return; // Halt execution so they stay on the same question
     }
 
+    // --- GAME STATE NAVIGATION BOUNDARY ---
+    if (m_exercisesSolved >= MATCH_DURATION) {
+        // Disable text fields and toggle action buttons
+        disableInputs();
+        submitButton->setVisible(false);
+        playAgainButton->setVisible(true);
 
+        QMessageBox::information(this, "Match Finished!",
+                                 QString("Game Over, %1!\nFinal Score: %2 XP\nAccuracy: %3/%4")
+                                     .arg(m_playerName)
+                                     .arg(m_runningScore)
+                                     .arg(m_exercisesSolved)
+                                     .arg(m_totalExercisesAttemped)); // <-- Dynamically maps click attempts!
 
+        saveAndShowLeaderboard();
+        feedbackLabel->setText("Match Complete! Click 'Play Again' to beat your score.");
+        feedbackLabel->setStyleSheet("color: lime; font-weight: bold;");
 
+    } else {
+        // Clear text fields out and pull the next layout challenge smoothly!
+        clearInputs();
+        generateNewQuestion();
+    }
 }
+
 
 void SubnetQuiz::updateDisplay () {
     QString ipStr = SubnetCalculator::ipToString(this->currentNetworkId);
@@ -291,7 +357,116 @@ void SubnetQuiz::updateScoreDisplay() {
                                    .arg(m_exercisesSolved)
                                    .arg(m_totalExercisesAttemped)
                                    .arg(m_runningScore));
+    scoreTrackerLabel->setStyleSheet("color: #cdd6f4; font-weight: bold; background: transparent;");
 }
+
+void SubnetQuiz::disableInputs() {
+    // Replace these with the actual variable names of your QLineEdits / QPushButtons
+    firstAddrInput->setEnabled(false);
+    lastAddrInput->setEnabled(false);
+    broadcastInput->setEnabled(false);
+    hostsInput->setEnabled(false);
+    submitButton->setEnabled(false);
+
+    // Switch the text of your alert box to indicate completion
+    feedbackLabel->setText("Match Complete! Check the Leaderboard.");
+}
+
+void SubnetQuiz::resetGame() {
+    // 1. Reset game state variables
+    initializeGame();
+    m_runningScore = 0;
+    m_exercisesSolved = 0;
+    m_totalExercisesAttemped = 0;
+
+    // 2. Re-enable all the input boxes and buttons
+    firstAddrInput->setEnabled(true);
+    lastAddrInput->setEnabled(true);
+    broadcastInput->setEnabled(true);
+    hostsInput->setEnabled(true);
+    submitButton->setEnabled(true);
+
+    // 3. Toggle button visibility back to game mode
+    playAgainButton->setVisible(false);
+    submitButton->setVisible(true);
+
+    // 4. Wipe old text fields and scores
+    clearInputs();
+    updateScoreDisplay();
+    feedbackLabel->setText("Good luck!");
+
+    // 5. Kick off Round 1 of the new match
+
+    generateNewQuestion();
+}
+
+void SubnetQuiz::saveAndShowLeaderboard() {
+    QString writePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir dir(writePath);
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+    QString filePath = dir.filePath("leaderboard.json");
+
+    QJsonArray scoresArray;
+
+    QFile file(filePath);
+    if (file.open(QIODevice::ReadOnly)) {
+        QJsonDocument loadDoc = QJsonDocument::fromJson(file.readAll());
+        scoresArray = loadDoc.array();
+        file.close();
+    }
+
+    // Change MATCH_DURATION to m_totalExercisesAttemped
+    QJsonObject currentMatch;
+    currentMatch["name"] = m_playerName.isEmpty() ? "Anonymous" : m_playerName;
+    currentMatch["score"] = m_runningScore;
+    currentMatch["accuracy"] = QString("%1/%2").arg(m_exercisesSolved).arg(m_totalExercisesAttemped);
+
+
+    scoresArray.append(currentMatch);
+
+    std::vector<QJsonObject> sortedEntries;
+    for (int i=0; i <scoresArray.size(); ++i) {
+        sortedEntries.push_back(scoresArray.at(i).toObject());
+    }
+
+    std::sort(sortedEntries.begin(),sortedEntries.end(), [](const QJsonObject& a, const QJsonObject& b) {
+        return a["score"].toInt() > b["score"].toInt();
+    });
+    QJsonArray finalArray;
+    int limit = std::min(10, static_cast<int>(sortedEntries.size()));
+    for (int i = 0; i < limit; ++i) {
+        finalArray.append(sortedEntries[i]);
+    }
+
+    // 6. Write the sorted data right back to the JSON file
+    if (file.open(QIODevice::WriteOnly)) {
+        QJsonDocument saveDoc(finalArray);
+        file.write(saveDoc.toJson());
+        file.close();
+    }
+
+    // 7. Render a clean visual leaderboard pop-up window
+    QString leaderboardText = "=== LEADERBOARD TOP 10 ===\n\n";
+
+    for (int i = 0; i < finalArray.size(); ++i) {
+        QJsonObject row = finalArray.at(i).toObject();
+
+        // Put a little indicator flag if this row is the score they literally just achieved
+        QString accent = (row["name"].toString() == m_playerName && row["score"].toInt() == m_runningScore) ? " *YOUR SCORE*" : "";
+
+        leaderboardText += QString("#%1 - %2: %3 XP (Accuracy: %4)%5\n")
+                               .arg(i + 1)
+                               .arg(row["name"].toString())
+                               .arg(row["score"].toInt())
+                               .arg(row["accuracy"].toString())
+                               .arg(accent);
+    }
+
+    QMessageBox::information(this, "Match Finished - Hall of Fame", leaderboardText);
+}
+
 
 SubnetQuiz::~SubnetQuiz() {
 }

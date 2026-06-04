@@ -40,7 +40,6 @@ private:
 
     QString m_playerName;
 
-    int m_score = 0;
     int m_totalQuestions = 0;
     int m_exercisesSolved = 0;
     int m_totalExercisesAttemped = 0;
@@ -66,6 +65,8 @@ private:
     QLabel *playerLabel;
     QLabel *feedbackLabel;
 
+    QPushButton* playAgainButton;
+
 
 signals:
     void finished();
@@ -77,6 +78,9 @@ private slots:
     void checkAnswer();
     void clearInputs();
     void updateScoreDisplay();
+    void disableInputs();
+    void resetGame();
+    void saveAndShowLeaderboard();
 
 };
 #endif // SUBNETQUIZ_H
