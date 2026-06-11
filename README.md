@@ -1,6 +1,6 @@
 Subnet calculator game developed while being a student of the HNC NextGen Computing at NCL Coatbridge Campus.
 Excellent to improve your ability to calculate subnets on the spots - highly recommended to everyone interested in Networking!
-v.0.2 - 04/06/2026
+v.1.0 - 11/06/2026
 # Subnet Trainer v1.0
 
 A fast-paced, interactive subnetting quiz game developed during my studies in the **HNC NextGen Computing** at **New College Lanarkshire (NCL), Coatbridge Campus**. 
